@@ -18,6 +18,7 @@ def _required_env(name: str) -> str:
 @dataclass(frozen=True)
 class Settings:
     database_url: str
+    supabase_url: str
     cors_origins: list[str]
     cors_origin_regex: str | None
 
@@ -34,6 +35,7 @@ def load_settings() -> Settings:
     origin_regex = os.getenv("CORS_ORIGIN_REGEX", "").strip() or None
     return Settings(
         database_url=_required_env("DATABASE_URL"),
+        supabase_url=_required_env("SUPABASE_URL").rstrip("/"),
         cors_origins=origins,
         cors_origin_regex=origin_regex,
     )

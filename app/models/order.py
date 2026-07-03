@@ -17,6 +17,11 @@ class Order(Base):
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("auth.users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     order_number: Mapped[str] = mapped_column(
         String(32),
         unique=True,
