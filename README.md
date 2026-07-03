@@ -15,7 +15,8 @@ pasan por FastAPI.
 ## Configuración
 
 1. Copia `.env.example` como `.env`.
-2. Configura `DATABASE_URL` con Supavisor en puerto `6543`.
+2. Configura `DATABASE_URL` con Supavisor en puerto `6543` para el runtime y
+   `MIGRATION_DATABASE_URL` en puerto `5432` para migraciones.
 3. Instala dependencias:
 
    ```powershell
@@ -27,7 +28,7 @@ pasan por FastAPI.
 4. Aplica migraciones:
 
    ```powershell
-   npx supabase db push --db-url "$env:DATABASE_URL" --include-all
+   npx supabase db push --db-url "$env:MIGRATION_DATABASE_URL" --include-all
    ```
 
 5. Ejecuta:
