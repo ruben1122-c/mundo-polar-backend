@@ -1,32 +1,70 @@
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
+import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
-from jwt.exceptions import PyJWTError, PyJWKClientError
+from jwt.exceptions import PyJWTError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.user_profile import UserProfile
+from app.models.user import AuthSession, User
+
+JWT_ALGORITHM = "HS256"
+JWT_ISSUER = "mundo-polar-api"
+JWT_AUDIENCE = "mundo-polar-web"
 
 
 @dataclass(frozen=True)
 class CurrentUser:
     id: UUID
     email: str
-    profile: UserProfile
+    profile: User
+    session_id: UUID
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
-issuer = f"{settings.supabase_url}/auth/v1"
-jwks_client = PyJWKClient(
-    f"{issuer}/.well-known/jwks.json",
-    cache_keys=True,
-    lifespan=300,
-)
+
+
+def hash_password(password: str) -> str:
+    password_bytes = password.encode("utf-8")
+    if len(password_bytes) > 72:
+        raise ValueError("La contraseña no puede superar 72 bytes.")
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt(rounds=12)).decode()
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            password_hash.encode("utf-8"),
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def create_access_token(
+    *,
+    user_id: UUID,
+    session_id: UUID,
+    expires_at: datetime,
+) -> str:
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {
+            "sub": str(user_id),
+            "jti": str(session_id),
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
+            "iat": now,
+            "exp": expires_at,
+        },
+        settings.jwt_secret,
+        algorithm=JWT_ALGORITHM,
+    )
 
 
 def _unauthorized() -> HTTPException:
@@ -45,32 +83,44 @@ def get_current_user(
         raise _unauthorized()
 
     try:
-        signing_key = jwks_client.get_signing_key_from_jwt(credentials.credentials)
         payload = jwt.decode(
             credentials.credentials,
-            signing_key.key,
-            algorithms=["ES256"],
-            audience="authenticated",
-            issuer=issuer,
-            options={"require": ["exp", "iss", "sub", "aud"]},
+            settings.jwt_secret,
+            algorithms=[JWT_ALGORITHM],
+            audience=JWT_AUDIENCE,
+            issuer=JWT_ISSUER,
+            options={"require": ["exp", "iss", "sub", "aud", "jti"]},
         )
         user_id = UUID(payload["sub"])
-        email = str(payload.get("email", "")).strip().lower()
-        if not email or payload.get("role") != "authenticated":
-            raise ValueError("Missing email claim")
-    except (PyJWTError, PyJWKClientError, KeyError, TypeError, ValueError):
+        session_id = UUID(payload["jti"])
+    except (PyJWTError, KeyError, TypeError, ValueError):
         raise _unauthorized() from None
 
-    profile = db.query(UserProfile).filter(UserProfile.id == user_id).first()
-    if not profile:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="La cuenta no tiene un perfil válido.",
+    result = (
+        db.query(AuthSession, User)
+        .join(User, User.id == AuthSession.user_id)
+        .filter(
+            AuthSession.id == session_id,
+            AuthSession.user_id == user_id,
         )
-    if not profile.is_active:
+        .first()
+    )
+    if not result:
+        raise _unauthorized()
+
+    auth_session, user = result
+    now = datetime.now(timezone.utc)
+    if auth_session.revoked_at or auth_session.expires_at <= now:
+        raise _unauthorized()
+    if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="La cuenta está desactivada.",
         )
 
-    return CurrentUser(id=user_id, email=email, profile=profile)
+    return CurrentUser(
+        id=user.id,
+        email=user.email,
+        profile=user,
+        session_id=auth_session.id,
+    )
